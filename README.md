@@ -10,16 +10,17 @@ seen (in a small JSON file), and only alerts you about genuinely new ones.
 ## How it works
 
 1. You give it a normal Yad2 search-page URL (the one in your browser bar).
-2. It loads that page in a **real Chromium** browser (via Playwright). Yad2 is
-   protected by Radware Bot Manager — a JavaScript bot challenge that plain HTTP
-   clients can't pass — so a real browser is used to get through it. In Docker
-   the browser runs **headful under Xvfb** (a virtual display), which is much
-   harder for the bot manager to fingerprint than headless mode.
-3. It captures the JSON the page itself fetches from Yad2's `gw.yad2.co.il`
-   gateway (already past the bot challenge), falling back to the page's
-   server-rendered `__NEXT_DATA__` blob if needed.
-4. New listing ids (ones not in `state.json`) are sent to your Telegram chat.
-5. It sleeps for `POLL_INTERVAL` seconds and repeats.
+2. It fetches the matching Yad2 `gw.yad2.co.il` gateway JSON. Yad2 is protected
+   by **Radware Bot Manager**, which blocks datacenter IPs, so there are two
+   fetch modes:
+   - **Scraping API (for VPS/datacenter hosts):** if `YAD2_SCRAPER_API_KEY` is
+     set, the request goes through a scraping API that provides a residential
+     Israeli IP and handles the anti-bot layer. **This is required on a VPS.**
+   - **Browser (for residential IPs):** otherwise it drives a real Chromium
+     browser (headful under Xvfb in Docker) and captures the JSON the page
+     fetches. Only works from a trusted/residential IP.
+3. New listing ids (ones not in `state.json`) are sent to your Telegram chat.
+4. It sleeps for `POLL_INTERVAL` seconds and repeats.
 
 The first cycle just records a baseline of the currently-live listings so you
 don't get flooded with alerts for everything that already exists.
@@ -37,6 +38,24 @@ cp .env.example .env
 
 > On Docker you can skip the `playwright install` step — the image already
 > includes Chromium.
+
+### Getting past Radware on a VPS (scraping API)
+
+If you run on a datacenter/VPS host (most cloud servers), Radware blocks the
+IP and the browser can't get through. Sign up for a scraping API — e.g.
+[ScrapingBee](https://www.scrapingbee.com/), [ZenRows](https://www.zenrows.com/),
+or [ScraperAPI](https://www.scraperapi.com/) (all have free tiers) — and set in
+`.env`:
+
+```dotenv
+YAD2_SCRAPER_API_KEY=your_api_key
+YAD2_SCRAPER=scrapingbee        # or zenrows / scraperapi
+YAD2_SCRAPER_COUNTRY=il         # residential Israeli IP
+```
+
+The listener then fetches Yad2's JSON gateway through the provider's
+residential Israeli proxy. If it returns non-JSON (the provider couldn't get
+past the gateway), try `YAD2_SCRAPER_RENDER_JS=1`.
 
 Then edit `.env`:
 

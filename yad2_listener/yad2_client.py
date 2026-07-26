@@ -139,16 +139,83 @@ def fetch_listings(
     headless: bool | None = None,
     **_ignored: Any,
 ) -> list[Listing]:
+    """Fetch normalized listings for a Yad2 search.
+
+    Uses a scraping API when one is configured (``YAD2_SCRAPER_API_KEY``) —
+    needed because Radware Bot Manager blocks datacenter IPs — otherwise drives
+    a real browser (useful from a residential IP). Raises :class:`Yad2FetchError`
+    with diagnostics if no usable data is obtained.
+    """
+    from .scraper_client import ScraperClient
+
+    scraper = ScraperClient.from_env()
+    if scraper is not None:
+        return _fetch_via_scraper(scraper, search_url, timeout=timeout)
+    return _fetch_via_browser(
+        search_url, timeout=timeout, settle_ms=settle_ms, headless=headless
+    )
+
+
+def _dedup(listings: list[Listing]) -> list[Listing]:
+    unique: dict[str, Listing] = {}
+    for item in listings:
+        unique.setdefault(item.id, item)
+    return list(unique.values())
+
+
+def _fetch_via_scraper(scraper, search_url: str, *, timeout: int) -> list[Listing]:
+    """Fetch the gateway feed JSON through a scraping API (residential IP)."""
+    import requests
+
+    headers = {
+        "Referer": "https://www.yad2.co.il/",
+        "Origin": "https://www.yad2.co.il",
+        "Accept": "application/json, text/plain, */*",
+    }
+    problems: list[str] = []
+    for url in candidate_feed_urls(search_url):
+        try:
+            response = scraper.get(url, headers=headers, timeout=timeout + 20)
+        except requests.RequestException as exc:
+            problems.append(f"{url} -> request error: {exc}")
+            continue
+
+        if response.status_code != 200:
+            snippet = response.text[:200].replace("\n", " ").strip()
+            problems.append(f"{url} -> scraper HTTP {response.status_code}: {snippet!r}")
+            continue
+
+        try:
+            payload = response.json()
+        except ValueError:
+            snippet = response.text[:200].replace("\n", " ").strip()
+            problems.append(f"{url} -> 200 but non-JSON body: {snippet!r}")
+            continue
+
+        listings = _dedup(parse_listings(payload))
+        log.info("Scraper endpoint %s returned %d listing(s)", url, len(listings))
+        return listings
+
+    raise Yad2FetchError(
+        f"Scraper ({scraper.provider}) returned no usable JSON. Tried:\n  "
+        + "\n  ".join(problems)
+    )
+
+
+def _fetch_via_browser(
+    search_url: str,
+    *,
+    timeout: int = 60,
+    settle_ms: int = 6000,
+    headless: bool | None = None,
+) -> list[Listing]:
     """Fetch listings by driving a real browser past Radware Bot Manager.
 
-    Yad2 is guarded by Radware Bot Manager (a JavaScript bot challenge), so a
-    plain HTTP client just receives the captcha page. We load the search page
-    in Chromium (headful under Xvfb in Docker — far harder to fingerprint than
-    headless), let the challenge resolve, and capture the JSON the page itself
-    fetches from the ``gw.yad2.co.il`` gateway. Falls back to the SSR
-    ``__NEXT_DATA__`` blob if no gateway JSON is seen.
-
-    Raises :class:`Yad2FetchError` — with diagnostics — if no usable data.
+    Loads the search page in Chromium (headful under Xvfb in Docker — far
+    harder to fingerprint than headless), lets the challenge resolve, and
+    captures the JSON the page itself fetches from the ``gw.yad2.co.il``
+    gateway. Falls back to the SSR ``__NEXT_DATA__`` blob if no gateway JSON is
+    seen. Only works from a trusted (residential) IP.
     """
     import os
 
