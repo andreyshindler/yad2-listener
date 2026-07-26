@@ -9,13 +9,16 @@ shapes into a flat list of :class:`Listing` objects.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 from urllib.parse import parse_qsl, urlencode, urlparse
 
 import requests
 
-GATEWAY = "https://gw.yad2.co.il/feed-search-legacy"
+log = logging.getLogger(__name__)
+
+GW = "https://gw.yad2.co.il"
 
 # Browser-like headers — the gateway sits behind Cloudflare and rejects
 # requests that don't look like they came from the site.
@@ -29,6 +32,10 @@ DEFAULT_HEADERS = {
     "Origin": "https://www.yad2.co.il",
     "Referer": "https://www.yad2.co.il/",
 }
+
+
+class Yad2FetchError(RuntimeError):
+    """Raised when no gateway endpoint returned usable JSON."""
 
 
 @dataclass(frozen=True)
@@ -54,28 +61,60 @@ class Listing:
         return "\n".join(parts)
 
 
-def build_feed_url(search_url: str) -> str:
-    """Translate a yad2.co.il search-page URL into the gateway feed URL.
+# Maps a search-page category path -> the modern gateway feed paths to try,
+# in order. Yad2 retired the old ``feed-search-legacy`` endpoints in favor of
+# per-domain feeds; we keep the legacy one last as a fallback.
+_FEED_PATHS: dict[str, list[str]] = {
+    "realestate/forsale": ["realestate-feed/forsale/map"],
+    "realestate/rent": ["realestate-feed/rent/map"],
+    "realestate/commercial": ["realestate-feed/commercial-forsale/map"],
+    "vehicles/cars": ["vehicles-feed/cars"],
+    "vehicles/motorcycles": ["vehicles-feed/motorcycles"],
+    "products": ["products-feed"],
+}
 
-    e.g. ``https://www.yad2.co.il/realestate/forsale?city=5000``
-    ->   ``https://gw.yad2.co.il/feed-search-legacy/realestate/forsale?city=5000``
+
+def candidate_feed_urls(search_url: str) -> list[str]:
+    """Return the gateway feed URLs to try for a given search-page URL.
+
+    The first that returns usable JSON wins. Yad2's endpoints change over
+    time, so we try the modern per-domain feed(s) plus the legacy feed.
     """
     parsed = urlparse(search_url)
 
     if "gw.yad2.co.il" in parsed.netloc:
-        # Already a gateway URL — use it as-is.
-        return search_url
+        return [search_url]  # already a gateway URL — use as-is
 
     path = parsed.path.strip("/")
     if not path:
         raise ValueError(f"Cannot determine Yad2 category from URL: {search_url!r}")
 
-    params = dict(parse_qsl(parsed.query, keep_blank_values=True))
-    query = urlencode(params)
-    feed_url = f"{GATEWAY}/{path}"
-    if query:
-        feed_url += f"?{query}"
-    return feed_url
+    query = urlencode(dict(parse_qsl(parsed.query, keep_blank_values=True)))
+
+    feed_paths = list(_FEED_PATHS.get(path, []))
+    feed_paths.append(f"feed-search-legacy/{path}")  # legacy fallback
+
+    urls = []
+    for feed_path in feed_paths:
+        url = f"{GW}/{feed_path}"
+        if query:
+            url += f"?{query}"
+        urls.append(url)
+    return urls
+
+
+# Backwards-compatible single-URL helper (first candidate).
+def build_feed_url(search_url: str) -> str:
+    return candidate_feed_urls(search_url)[0]
+
+
+def _warm_up(session: requests.Session, search_url: str, timeout: int) -> None:
+    """Hit the search page once so Cloudflare hands us cookies before we call
+    the gateway. Best-effort — failures here are non-fatal."""
+    try:
+        session.get(search_url, headers=DEFAULT_HEADERS, timeout=timeout)
+    except requests.RequestException:
+        pass
 
 
 def fetch_listings(
@@ -84,12 +123,45 @@ def fetch_listings(
     session: requests.Session | None = None,
     timeout: int = 20,
 ) -> list[Listing]:
-    """Fetch the search and return normalized listings."""
-    feed_url = build_feed_url(search_url)
+    """Fetch the search and return normalized listings.
+
+    Tries each candidate gateway endpoint until one returns JSON, then parses
+    it. Raises :class:`Yad2FetchError` with a diagnostic snippet if none do.
+    """
     sess = session or requests.Session()
-    response = sess.get(feed_url, headers=DEFAULT_HEADERS, timeout=timeout)
-    response.raise_for_status()
-    return parse_listings(response.json())
+    if not sess.cookies:
+        _warm_up(sess, search_url, timeout)
+
+    problems: list[str] = []
+    for url in candidate_feed_urls(search_url):
+        try:
+            response = sess.get(url, headers=DEFAULT_HEADERS, timeout=timeout)
+        except requests.RequestException as exc:
+            problems.append(f"{url} -> request error: {exc}")
+            continue
+
+        content_type = response.headers.get("content-type", "")
+        if response.status_code != 200 or "json" not in content_type.lower():
+            snippet = response.text[:200].replace("\n", " ").strip()
+            problems.append(
+                f"{url} -> HTTP {response.status_code}, content-type={content_type!r}, body: {snippet!r}"
+            )
+            continue
+
+        try:
+            payload = response.json()
+        except ValueError:
+            snippet = response.text[:200].replace("\n", " ").strip()
+            problems.append(f"{url} -> 200 but non-JSON body: {snippet!r}")
+            continue
+
+        listings = parse_listings(payload)
+        log.info("Endpoint %s returned %d listing(s)", url, len(listings))
+        return listings
+
+    raise Yad2FetchError(
+        "No Yad2 endpoint returned usable JSON. Tried:\n  " + "\n  ".join(problems)
+    )
 
 
 # --- Parsing -------------------------------------------------------------

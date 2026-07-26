@@ -1,16 +1,31 @@
-from yad2_listener.yad2_client import build_feed_url, parse_listings
+from yad2_listener.yad2_client import (
+    build_feed_url,
+    candidate_feed_urls,
+    parse_listings,
+)
 
 
-def test_build_feed_url_from_search_page():
-    url = build_feed_url("https://www.yad2.co.il/realestate/forsale?city=5000&rooms=3-4")
-    assert url == (
-        "https://gw.yad2.co.il/feed-search-legacy/realestate/forsale?city=5000&rooms=3-4"
-    )
+def test_candidate_urls_prefer_modern_then_legacy():
+    urls = candidate_feed_urls("https://www.yad2.co.il/realestate/forsale?city=5000&rooms=3-4")
+    assert urls == [
+        "https://gw.yad2.co.il/realestate-feed/forsale/map?city=5000&rooms=3-4",
+        "https://gw.yad2.co.il/feed-search-legacy/realestate/forsale?city=5000&rooms=3-4",
+    ]
 
 
-def test_build_feed_url_passthrough_for_gateway():
+def test_candidate_urls_unknown_category_falls_back_to_legacy_only():
+    urls = candidate_feed_urls("https://www.yad2.co.il/something/new?x=1")
+    assert urls == ["https://gw.yad2.co.il/feed-search-legacy/something/new?x=1"]
+
+
+def test_build_feed_url_returns_first_candidate():
+    url = build_feed_url("https://www.yad2.co.il/realestate/forsale?city=5000")
+    assert url == "https://gw.yad2.co.il/realestate-feed/forsale/map?city=5000"
+
+
+def test_candidate_urls_passthrough_for_gateway():
     gw = "https://gw.yad2.co.il/feed-search-legacy/vehicles/cars?manufacturer=19"
-    assert build_feed_url(gw) == gw
+    assert candidate_feed_urls(gw) == [gw]
 
 
 def test_parse_legacy_feed_shape():

@@ -10,7 +10,7 @@ import requests
 from .config import Config
 from .state import SeenStore
 from .telegram_notifier import TelegramNotifier
-from .yad2_client import Listing, fetch_listings
+from .yad2_client import Listing, Yad2FetchError, fetch_listings
 
 log = logging.getLogger(__name__)
 
@@ -59,6 +59,8 @@ class Yad2Listener:
                 if first_run:
                     log.info("Baseline established with %d listings; no alerts sent", len(new))
                     first_run = False
+            except Yad2FetchError as exc:
+                log.warning("Fetch failed, will retry next cycle: %s", exc)
             except requests.RequestException as exc:
                 log.warning("Fetch failed, will retry next cycle: %s", exc)
             except Exception:  # keep the loop alive on unexpected errors
