@@ -150,7 +150,9 @@ def fetch_listings(
 
     scraper = ScraperClient.from_env()
     if scraper is not None:
+        log.info("Fetch mode: scraping API (provider=%s, country=%s)", scraper.provider, scraper.country)
         return _fetch_via_scraper(scraper, search_url, timeout=timeout)
+    log.info("Fetch mode: browser (no YAD2_SCRAPER_API_KEY set)")
     return _fetch_via_browser(
         search_url, timeout=timeout, settle_ms=settle_ms, headless=headless
     )
