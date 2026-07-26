@@ -100,6 +100,23 @@ docker run --rm --env-file .env -v yad2-state:/data yad2-listener --once
 The image's `ENTRYPOINT` is `python main.py`, so any flags you pass to
 `docker run`/`docker compose run` go straight to the CLI.
 
+### CI (GitHub Actions)
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs the test suite on
+every push and pull request, then **sends the result to your Telegram bot**
+(✅/❌ with the branch, commit, and a link to the run).
+
+For the Telegram notification, add two repo secrets under **Settings → Secrets
+and variables → Actions**:
+
+| Secret | Value |
+| --- | --- |
+| `TELEGRAM_BOT_TOKEN` | your bot token |
+| `TELEGRAM_CHAT_ID` | your chat id |
+
+If those secrets aren't set, CI still runs the tests and just skips the
+notification.
+
 ### Continuous deployment with Komodo
 
 To auto-pull and redeploy on every push to `main`, see
