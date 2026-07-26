@@ -106,61 +106,115 @@ def build_feed_url(search_url: str) -> str:
     return candidate_feed_urls(search_url)[0]
 
 
+# Injected before any page script runs, to hide the tell-tale signs of an
+# automated browser that Radware Bot Manager looks for.
+_STEALTH_JS = """
+Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+Object.defineProperty(navigator, 'languages', {get: () => ['he-IL', 'he', 'en-US', 'en']});
+Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+window.chrome = window.chrome || {runtime: {}};
+const _query = window.navigator.permissions && window.navigator.permissions.query;
+if (_query) {
+  window.navigator.permissions.query = (p) => (
+    p && p.name === 'notifications'
+      ? Promise.resolve({state: Notification.permission})
+      : _query(p)
+  );
+}
+"""
+
+_CHALLENGE_MARKERS = ("captcha", "radware", "bot manager", "just a moment", "attention required")
+
+
+def _looks_like_challenge(text: str) -> bool:
+    low = (text or "").lower()
+    return any(marker in low for marker in _CHALLENGE_MARKERS)
+
+
 def fetch_listings(
     search_url: str,
     *,
     timeout: int = 60,
-    settle_ms: int = 4000,
+    settle_ms: int = 6000,
+    headless: bool | None = None,
     **_ignored: Any,
 ) -> list[Listing]:
-    """Fetch listings by driving a real headless browser.
+    """Fetch listings by driving a real browser past Radware Bot Manager.
 
     Yad2 is guarded by Radware Bot Manager (a JavaScript bot challenge), so a
-    plain HTTP client just receives the captcha page. We instead load the
-    search page in headless Chromium — which solves the challenge — and capture
-    the JSON the page itself fetches from the ``gw.yad2.co.il`` gateway. Those
-    calls are already past Radware, so we get clean data. Falls back to the
-    server-rendered ``__NEXT_DATA__`` blob if no gateway JSON is seen.
+    plain HTTP client just receives the captcha page. We load the search page
+    in Chromium (headful under Xvfb in Docker — far harder to fingerprint than
+    headless), let the challenge resolve, and capture the JSON the page itself
+    fetches from the ``gw.yad2.co.il`` gateway. Falls back to the SSR
+    ``__NEXT_DATA__`` blob if no gateway JSON is seen.
 
-    Raises :class:`Yad2FetchError` if the browser never got usable data.
+    Raises :class:`Yad2FetchError` — with diagnostics — if no usable data.
     """
+    import os
+
     # Imported lazily so the (heavy) dependency is only needed at fetch time.
     from playwright.sync_api import TimeoutError as PlaywrightTimeout
     from playwright.sync_api import sync_playwright
 
+    if headless is None:
+        headless = os.environ.get("YAD2_HEADLESS", "1").lower() not in ("0", "false", "no")
+
     payloads: list[Any] = []
+    json_responses: list[str] = []  # any yad2 JSON seen (diagnostics)
 
     def on_response(response) -> None:
         try:
             content_type = response.headers.get("content-type", "")
-            if "gw.yad2.co.il" in response.url and "json" in content_type.lower():
-                payloads.append(response.json())
+            if "yad2.co.il" in response.url and "json" in content_type.lower():
+                json_responses.append(response.url)
+                if "gw.yad2.co.il" in response.url:
+                    payloads.append(response.json())
         except Exception:  # a body we can't read is not worth crashing over
             pass
 
+    final_title = final_url = ""
     with sync_playwright() as pw:
         browser = pw.chromium.launch(
-            headless=True,
-            args=["--no-sandbox", "--disable-dev-shm-usage"],
+            headless=headless,
+            args=[
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-blink-features=AutomationControlled",
+            ],
         )
         try:
             context = browser.new_context(
                 user_agent=DEFAULT_HEADERS["User-Agent"],
                 locale="he-IL",
+                timezone_id="Asia/Jerusalem",
                 viewport={"width": 1366, "height": 900},
             )
+            context.add_init_script(_STEALTH_JS)
             page = context.new_page()
             page.on("response", on_response)
 
             page.goto(search_url, wait_until="domcontentloaded", timeout=timeout * 1000)
+
+            # Wait for the Radware challenge to clear: it auto-reloads into the
+            # real page once its JS finishes, so poll the title until it stops
+            # looking like a challenge (or we run out of patience).
+            deadline_ms = 30000
+            waited = 0
+            while waited < deadline_ms and _looks_like_challenge(page.title()):
+                page.wait_for_timeout(1000)
+                waited += 1000
+
             try:
                 page.wait_for_load_state("networkidle", timeout=timeout * 1000)
             except PlaywrightTimeout:
                 pass  # some XHRs keep the connection warm; proceed anyway
-            page.wait_for_timeout(settle_ms)  # let the challenge resolve / late XHRs land
+            page.wait_for_timeout(settle_ms)  # let late XHRs land
 
             if not payloads:
                 payloads.extend(_next_data_payloads(page))
+
+            final_title = page.title()
+            final_url = page.url
         finally:
             browser.close()
 
@@ -172,7 +226,10 @@ def fetch_listings(
     if not payloads:
         raise Yad2FetchError(
             "Browser loaded the page but captured no Yad2 gateway JSON. "
-            "The bot challenge may not have resolved, or the page structure changed."
+            f"headless={headless}, final_title={final_title!r}, final_url={final_url!r}, "
+            f"looks_like_challenge={_looks_like_challenge(final_title)}, "
+            f"yad2_json_responses_seen={len(json_responses)}. "
+            "If looks_like_challenge is true, the bot challenge did not clear."
         )
 
     log.info("Captured %d gateway payload(s), %d listing(s)", len(payloads), len(listings))

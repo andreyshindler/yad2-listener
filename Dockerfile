@@ -22,8 +22,13 @@ COPY yad2_listener ./yad2_listener
 ENV STATE_FILE=/data/state.json
 VOLUME ["/data"]
 
+# Run Chromium headful under a virtual display (Xvfb) — a real on-screen
+# browser is far harder for Radware Bot Manager to fingerprint than headless.
+ENV YAD2_HEADLESS=0
+
 # The Playwright image already has a non-root `pwuser`; run as them.
 RUN mkdir -p /data && chown -R pwuser:pwuser /data /app
 USER pwuser
 
-ENTRYPOINT ["python", "main.py"]
+# xvfb-run provides the virtual display; CLI args pass straight through.
+ENTRYPOINT ["xvfb-run", "-a", "python", "main.py"]
