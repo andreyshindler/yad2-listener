@@ -166,7 +166,18 @@ def _dedup(listings: list[Listing]) -> list[Listing]:
 
 
 def _fetch_via_scraper(scraper, search_url: str, *, timeout: int) -> list[Listing]:
-    """Fetch the gateway feed JSON through a scraping API (residential IP)."""
+    """Fetch listings through a scraping API (residential IP).
+
+    With ``render_js`` on, render the search page (the provider's browser solves
+    Radware) and extract the embedded listing JSON. Otherwise try the gateway
+    JSON directly — cheaper, but only works if the gateway isn't challenging.
+    """
+    if scraper.render_js:
+        return _scrape_rendered_page(scraper, search_url, timeout=timeout)
+    return _scrape_gateway_json(scraper, search_url, timeout=timeout)
+
+
+def _scrape_gateway_json(scraper, search_url: str, *, timeout: int) -> list[Listing]:
     import requests
 
     headers = {
@@ -181,27 +192,95 @@ def _fetch_via_scraper(scraper, search_url: str, *, timeout: int) -> list[Listin
         except requests.RequestException as exc:
             problems.append(f"{url} -> request error: {exc}")
             continue
-
         if response.status_code != 200:
             snippet = response.text[:200].replace("\n", " ").strip()
             problems.append(f"{url} -> scraper HTTP {response.status_code}: {snippet!r}")
             continue
-
         try:
             payload = response.json()
         except ValueError:
             snippet = response.text[:200].replace("\n", " ").strip()
             problems.append(f"{url} -> 200 but non-JSON body: {snippet!r}")
             continue
-
         listings = _dedup(parse_listings(payload))
         log.info("Scraper endpoint %s returned %d listing(s)", url, len(listings))
         return listings
 
     raise Yad2FetchError(
-        f"Scraper ({scraper.provider}) returned no usable JSON. Tried:\n  "
-        + "\n  ".join(problems)
+        f"Scraper ({scraper.provider}) returned no usable JSON. "
+        "The gateway is likely Radware-protected — set YAD2_SCRAPER_RENDER_JS=1 "
+        "to render the page instead. Tried:\n  " + "\n  ".join(problems)
     )
+
+
+def _scrape_rendered_page(scraper, search_url: str, *, timeout: int) -> list[Listing]:
+    import requests
+
+    try:
+        response = scraper.get(search_url, headers={"Accept": "text/html"}, timeout=timeout + 60)
+    except requests.RequestException as exc:
+        raise Yad2FetchError(f"Scraper page render request failed: {exc}")
+
+    if response.status_code != 200:
+        snippet = response.text[:200].replace("\n", " ").strip()
+        raise Yad2FetchError(f"Scraper page render HTTP {response.status_code}: {snippet!r}")
+
+    html = response.text
+    payloads = _extract_json_from_html(html)
+    listings: dict[str, Listing] = {}
+    for payload in payloads:
+        for item in parse_listings(payload):
+            listings.setdefault(item.id, item)
+
+    title = _html_title(html)
+    if not listings:
+        raise Yad2FetchError(
+            "Scraper rendered the page but found no listings. "
+            f"html_len={len(html)}, title={title!r}, json_blobs={len(payloads)}, "
+            f"looks_like_challenge={_looks_like_challenge(title)}. "
+            "Paste this line — it tells me how the page embeds its data."
+        )
+
+    log.info("Scraper rendered page: extracted %d listing(s) from %d JSON blob(s)", len(listings), len(payloads))
+    return list(listings.values())
+
+
+def _html_title(html: str) -> str:
+    import re
+
+    match = re.search(r"<title[^>]*>(.*?)</title>", html, re.S | re.I)
+    return match.group(1).strip() if match else ""
+
+
+def _extract_json_from_html(html: str) -> list[Any]:
+    """Pull embedded JSON blobs out of rendered HTML (Next.js __NEXT_DATA__ and
+    any other ``application/json`` script tags)."""
+    import json
+    import re
+
+    payloads: list[Any] = []
+
+    next_data = re.search(
+        r'<script[^>]*id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.S
+    )
+    if next_data:
+        try:
+            payloads.append(json.loads(next_data.group(1)))
+        except ValueError:
+            pass
+
+    for match in re.finditer(
+        r'<script[^>]*type="application/json"[^>]*>(.*?)</script>', html, re.S
+    ):
+        blob = match.group(1).strip()
+        if not blob:
+            continue
+        try:
+            payloads.append(json.loads(blob))
+        except ValueError:
+            pass
+
+    return payloads
 
 
 def _fetch_via_browser(
