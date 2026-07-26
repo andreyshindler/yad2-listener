@@ -50,9 +50,19 @@ class Yad2Listener:
         )
 
         first_run = len(self.store) == 0
+        announced = False
         while True:
             try:
+                before = len(self.store)
                 new = self.poll_once(notify=not first_run)
+                if not announced:
+                    # One-time heartbeat so you know it's alive and fetching.
+                    tracked = before if not first_run else len(new)
+                    self.notifier.send(
+                        f"🟢 מאזין יד2 הופעל. עוקב אחרי {tracked} מודעות. "
+                        f"תקבל התראה על מודעות חדשות."
+                    )
+                    announced = True
                 if first_run:
                     log.info("Baseline established with %d listings; no alerts sent", len(new))
                     first_run = False
