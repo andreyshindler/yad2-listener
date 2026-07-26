@@ -1,0 +1,57 @@
+# Komodo Resource Sync definition for the yad2-listener stack.
+#
+# This declares the Docker Compose deployment as code. Point a Komodo
+# "Resource Sync" at this file (Settings -> Resource Syncs -> new sync ->
+# repo `andreyshindler/yad2-listener`, path `deploy/komodo-stack.toml`), or
+# just use it as a reference while creating the Stack in the Komodo UI.
+#
+# Once synced, enabling the webhook (below) makes every push to `main` pull
+# the repo and redeploy the compose automatically.
+#
+# NOTE: a few field names/toggles can vary slightly between Komodo versions.
+# The Stack page in the Komodo UI is the source of truth — verify the
+# highlighted fields there after syncing.
+
+[[stack]]
+name = "yad2-listener"
+description = "Yad2 new-listing monitor -> Telegram"
+tags = ["yad2"]
+
+[stack.config]
+# The Komodo Server resource this stack runs on. Change to match the name of
+# your server in Komodo (Servers page).
+server = "srv1515969"
+
+# Stable compose project name -> keeps the `yad2-state` volume across redeploys.
+project_name = "yad2-listener"
+
+# --- Source: this git repo ------------------------------------------------
+git_provider = "github.com"
+git_account = "andreyshindler"          # Komodo git-account alias; remove if repo is public
+repo = "andreyshindler/yad2-listener"
+branch = "main"
+
+# Where the compose file lives inside the repo.
+run_directory = "."
+file_paths = ["docker-compose.yml"]
+
+# --- Redeploy behaviour ---------------------------------------------------
+# Rebuild the image from the Dockerfile on every deploy so code changes take
+# effect (compose otherwise reuses the cached image). This appends to the
+# `docker compose up -d` command Komodo runs.
+extra_args = ["--build"]
+
+# Accept the git webhook that triggers pull + redeploy (see deploy/KOMODO.md).
+webhook_enabled = true
+
+# --- Environment ----------------------------------------------------------
+# Komodo writes this block to `.env` in the run directory before deploying,
+# which the compose file reads via `env_file: .env`. Fill in your real values
+# here (or, better, manage them as secrets in the Komodo UI).
+env_file_path = ".env"
+environment = """
+TELEGRAM_BOT_TOKEN=CHANGE_ME
+TELEGRAM_CHAT_ID=CHANGE_ME
+YAD2_SEARCH_URL=https://www.yad2.co.il/realestate/forsale?city=5000
+POLL_INTERVAL=300
+"""

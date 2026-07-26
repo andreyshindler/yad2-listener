@@ -100,6 +100,15 @@ docker run --rm --env-file .env -v yad2-state:/data yad2-listener --once
 The image's `ENTRYPOINT` is `python main.py`, so any flags you pass to
 `docker run`/`docker compose run` go straight to the CLI.
 
+### Continuous deployment with Komodo
+
+To auto-pull and redeploy on every push to `main`, see
+[`deploy/KOMODO.md`](deploy/KOMODO.md). It sets up a Komodo Stack (defined as
+code in [`deploy/komodo-stack.toml`](deploy/komodo-stack.toml)) plus a GitHub
+webhook, so a `git push` triggers Komodo to pull the repo and rebuild/redeploy
+the compose automatically. The `yad2-state` volume persists across deploys, so
+you won't get re-alerted about old listings.
+
 ### Running under cron
 
 If you'd rather not keep a long-lived process, run `--once` on a schedule.
