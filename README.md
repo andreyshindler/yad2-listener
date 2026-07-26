@@ -50,6 +50,34 @@ python main.py --once
 python main.py
 ```
 
+### Running with Docker (recommended)
+
+The listener is a long-lived process, which makes it a good fit for Docker.
+
+```bash
+cp .env.example .env      # fill in your credentials + search URL first
+docker compose up -d      # build and run in the background
+docker compose logs -f    # watch it work
+docker compose down       # stop it
+```
+
+`docker compose` reads your `.env` for configuration. The seen-ids state is
+kept in a named volume (`yad2-state`) mounted at `/data`, so it survives
+restarts, rebuilds, and `docker compose down` — you won't get re-alerted about
+listings you've already seen. `restart: unless-stopped` brings it back up after
+a crash or host reboot.
+
+To run a one-off cycle or test Telegram without the compose service:
+
+```bash
+docker build -t yad2-listener .
+docker run --rm --env-file .env yad2-listener --test-telegram
+docker run --rm --env-file .env -v yad2-state:/data yad2-listener --once
+```
+
+The image's `ENTRYPOINT` is `python main.py`, so any flags you pass to
+`docker run`/`docker compose run` go straight to the CLI.
+
 ### Running under cron
 
 If you'd rather not keep a long-lived process, run `--once` on a schedule.

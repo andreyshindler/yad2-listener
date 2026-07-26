@@ -1,0 +1,15 @@
+services:
+  yad2-listener:
+    build: .
+    image: yad2-listener
+    container_name: yad2-listener
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Override so state lands on the mounted volume (see the volume below).
+      STATE_FILE: /data/state.json
+    volumes:
+      - yad2-state:/data
+
+volumes:
+  yad2-state:
