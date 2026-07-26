@@ -7,6 +7,20 @@ compose up`.
 There are two pieces: a **Komodo Stack** (what to deploy) and a **GitHub
 webhook** (what triggers a deploy on push).
 
+## 0. Stop the manual deployment first
+
+If you've been running `docker compose up` by hand in a checked-out copy, stop
+it before handing the stack to Komodo — the fixed `container_name: yad2-listener`
+means only one can run at a time:
+
+```bash
+cd ~/projects/yad2-listener
+docker compose down
+```
+
+Komodo manages its own clone of the repo, so you don't deploy from
+`~/projects/...` anymore once this is set up.
+
 ## 1. Create the Stack
 
 **Option A — as code (recommended):** add a Komodo *Resource Sync* pointing at
