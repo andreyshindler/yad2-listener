@@ -5,8 +5,6 @@ from __future__ import annotations
 import logging
 import time
 
-import requests
-
 from .config import Config
 from .state import SeenStore
 from .telegram_notifier import TelegramNotifier
@@ -20,7 +18,6 @@ class Yad2Listener:
         self.config = config
         self.store = SeenStore(config.state_file)
         self.notifier = TelegramNotifier(config.telegram_bot_token, config.telegram_chat_id)
-        self.session = requests.Session()
 
     def find_new(self, listings: list[Listing]) -> list[Listing]:
         """Return listings not previously seen, and mark them as seen."""
@@ -31,7 +28,7 @@ class Yad2Listener:
 
     def poll_once(self, *, notify: bool = True) -> list[Listing]:
         """One fetch → dedup → notify cycle. Returns the new listings."""
-        listings = fetch_listings(self.config.search_url, session=self.session)
+        listings = fetch_listings(self.config.search_url)
         log.info("Fetched %d listings", len(listings))
 
         new = self.find_new(listings)
@@ -60,8 +57,6 @@ class Yad2Listener:
                     log.info("Baseline established with %d listings; no alerts sent", len(new))
                     first_run = False
             except Yad2FetchError as exc:
-                log.warning("Fetch failed, will retry next cycle: %s", exc)
-            except requests.RequestException as exc:
                 log.warning("Fetch failed, will retry next cycle: %s", exc)
             except Exception:  # keep the loop alive on unexpected errors
                 log.exception("Unexpected error during poll")

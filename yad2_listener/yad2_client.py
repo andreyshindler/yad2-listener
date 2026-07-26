@@ -14,8 +14,6 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable
 from urllib.parse import parse_qsl, urlencode, urlparse
 
-import requests
-
 log = logging.getLogger(__name__)
 
 GW = "https://gw.yad2.co.il"
@@ -108,60 +106,90 @@ def build_feed_url(search_url: str) -> str:
     return candidate_feed_urls(search_url)[0]
 
 
-def _warm_up(session: requests.Session, search_url: str, timeout: int) -> None:
-    """Hit the search page once so Cloudflare hands us cookies before we call
-    the gateway. Best-effort — failures here are non-fatal."""
-    try:
-        session.get(search_url, headers=DEFAULT_HEADERS, timeout=timeout)
-    except requests.RequestException:
-        pass
-
-
 def fetch_listings(
     search_url: str,
     *,
-    session: requests.Session | None = None,
-    timeout: int = 20,
+    timeout: int = 60,
+    settle_ms: int = 4000,
+    **_ignored: Any,
 ) -> list[Listing]:
-    """Fetch the search and return normalized listings.
+    """Fetch listings by driving a real headless browser.
 
-    Tries each candidate gateway endpoint until one returns JSON, then parses
-    it. Raises :class:`Yad2FetchError` with a diagnostic snippet if none do.
+    Yad2 is guarded by Radware Bot Manager (a JavaScript bot challenge), so a
+    plain HTTP client just receives the captcha page. We instead load the
+    search page in headless Chromium — which solves the challenge — and capture
+    the JSON the page itself fetches from the ``gw.yad2.co.il`` gateway. Those
+    calls are already past Radware, so we get clean data. Falls back to the
+    server-rendered ``__NEXT_DATA__`` blob if no gateway JSON is seen.
+
+    Raises :class:`Yad2FetchError` if the browser never got usable data.
     """
-    sess = session or requests.Session()
-    if not sess.cookies:
-        _warm_up(sess, search_url, timeout)
+    # Imported lazily so the (heavy) dependency is only needed at fetch time.
+    from playwright.sync_api import TimeoutError as PlaywrightTimeout
+    from playwright.sync_api import sync_playwright
 
-    problems: list[str] = []
-    for url in candidate_feed_urls(search_url):
+    payloads: list[Any] = []
+
+    def on_response(response) -> None:
         try:
-            response = sess.get(url, headers=DEFAULT_HEADERS, timeout=timeout)
-        except requests.RequestException as exc:
-            problems.append(f"{url} -> request error: {exc}")
-            continue
+            content_type = response.headers.get("content-type", "")
+            if "gw.yad2.co.il" in response.url and "json" in content_type.lower():
+                payloads.append(response.json())
+        except Exception:  # a body we can't read is not worth crashing over
+            pass
 
-        content_type = response.headers.get("content-type", "")
-        if response.status_code != 200 or "json" not in content_type.lower():
-            snippet = response.text[:200].replace("\n", " ").strip()
-            problems.append(
-                f"{url} -> HTTP {response.status_code}, content-type={content_type!r}, body: {snippet!r}"
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage"],
+        )
+        try:
+            context = browser.new_context(
+                user_agent=DEFAULT_HEADERS["User-Agent"],
+                locale="he-IL",
+                viewport={"width": 1366, "height": 900},
             )
-            continue
+            page = context.new_page()
+            page.on("response", on_response)
 
-        try:
-            payload = response.json()
-        except ValueError:
-            snippet = response.text[:200].replace("\n", " ").strip()
-            problems.append(f"{url} -> 200 but non-JSON body: {snippet!r}")
-            continue
+            page.goto(search_url, wait_until="domcontentloaded", timeout=timeout * 1000)
+            try:
+                page.wait_for_load_state("networkidle", timeout=timeout * 1000)
+            except PlaywrightTimeout:
+                pass  # some XHRs keep the connection warm; proceed anyway
+            page.wait_for_timeout(settle_ms)  # let the challenge resolve / late XHRs land
 
-        listings = parse_listings(payload)
-        log.info("Endpoint %s returned %d listing(s)", url, len(listings))
-        return listings
+            if not payloads:
+                payloads.extend(_next_data_payloads(page))
+        finally:
+            browser.close()
 
-    raise Yad2FetchError(
-        "No Yad2 endpoint returned usable JSON. Tried:\n  " + "\n  ".join(problems)
-    )
+    listings: dict[str, Listing] = {}
+    for payload in payloads:
+        for item in parse_listings(payload):
+            listings.setdefault(item.id, item)
+
+    if not payloads:
+        raise Yad2FetchError(
+            "Browser loaded the page but captured no Yad2 gateway JSON. "
+            "The bot challenge may not have resolved, or the page structure changed."
+        )
+
+    log.info("Captured %d gateway payload(s), %d listing(s)", len(payloads), len(listings))
+    return list(listings.values())
+
+
+def _next_data_payloads(page) -> list[Any]:
+    """Fallback: pull the SSR __NEXT_DATA__ JSON embedded in the page."""
+    import json
+
+    try:
+        element = page.query_selector("#__NEXT_DATA__")
+        if element:
+            return [json.loads(element.inner_text())]
+    except Exception:
+        pass
+    return []
 
 
 # --- Parsing -------------------------------------------------------------

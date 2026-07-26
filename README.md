@@ -10,19 +10,31 @@ seen (in a small JSON file), and only alerts you about genuinely new ones.
 ## How it works
 
 1. You give it a normal Yad2 search-page URL (the one in your browser bar).
-2. It converts that to Yad2's JSON feed API (`gw.yad2.co.il`) and fetches results.
-3. New listing ids (ones not in `state.json`) are sent to your Telegram chat.
-4. It sleeps for `POLL_INTERVAL` seconds and repeats.
+2. It loads that page in a **headless Chromium** browser (via Playwright).
+   Yad2 is protected by Radware Bot Manager — a JavaScript bot challenge that
+   plain HTTP clients can't pass — so a real browser is used to get through it.
+3. It captures the JSON the page itself fetches from Yad2's `gw.yad2.co.il`
+   gateway (already past the bot challenge), falling back to the page's
+   server-rendered `__NEXT_DATA__` blob if needed.
+4. New listing ids (ones not in `state.json`) are sent to your Telegram chat.
+5. It sleeps for `POLL_INTERVAL` seconds and repeats.
 
 The first cycle just records a baseline of the currently-live listings so you
 don't get flooded with alerts for everything that already exists.
+
+> Because it drives a real browser, **Docker is the recommended way to run it** —
+> the image ships Chromium and everything it needs. See below.
 
 ## Setup
 
 ```bash
 pip install -r requirements.txt
+playwright install chromium   # one-time: download the headless browser
 cp .env.example .env
 ```
+
+> On Docker you can skip the `playwright install` step — the image already
+> includes Chromium.
 
 Then edit `.env`:
 
@@ -99,14 +111,17 @@ The `state.json` file carries the "already seen" set between runs:
 
 ## Notes on the Yad2 API
 
-Yad2 has no public API; this reads the same private gateway the website uses,
-and that gateway's response shape changes from time to time and between
-categories. The parser in `yad2_listener/yad2_client.py` is deliberately
-lenient — it walks the JSON looking for listing-shaped objects rather than
-hard-coding one path — so it tolerates most shape changes. If Yad2 changes
-things dramatically and you stop getting results, that parser is the place to
-look. Requests use browser-like headers because the gateway sits behind
-Cloudflare; if you ever hit blocks, increase `POLL_INTERVAL` to be gentle.
+Yad2 has no public API and sits behind **Radware Bot Manager**, a JavaScript
+bot challenge. A plain HTTP request just gets the challenge page back, which is
+why this project drives a headless browser instead: the browser solves the
+challenge, and we capture the JSON the page fetches from `gw.yad2.co.il`.
+
+The parser in `yad2_listener/yad2_client.py` is deliberately lenient — it walks
+the captured JSON looking for listing-shaped objects rather than hard-coding one
+path — so it tolerates Yad2's frequent shape changes. If Yad2 changes things
+dramatically and you stop getting results, that parser (and the browser fetch
+around it) is the place to look. Keep `POLL_INTERVAL` reasonable (the default
+5 minutes is fine) so you're gentle on their servers.
 
 ## Development
 
