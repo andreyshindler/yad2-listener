@@ -17,6 +17,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # App code.
 COPY main.py .
 COPY yad2_listener ./yad2_listener
+COPY docker/entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
 
 # Persist the seen-ids state outside the image layer.
 ENV STATE_FILE=/data/state.json
@@ -30,5 +32,6 @@ ENV YAD2_HEADLESS=0
 RUN mkdir -p /data && chown -R pwuser:pwuser /data /app
 USER pwuser
 
-# xvfb-run provides the virtual display; CLI args pass straight through.
-ENTRYPOINT ["xvfb-run", "-a", "python", "main.py"]
+# entrypoint.sh starts Xvfb (for headful Chromium) then runs the app; CLI args
+# pass straight through.
+ENTRYPOINT ["/app/entrypoint.sh"]

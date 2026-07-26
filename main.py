@@ -32,6 +32,7 @@ def main() -> None:
     args = parser.parse_args()
 
     _setup_logging()
+    logging.info("yad2-listener starting (once=%s, test_telegram=%s)", args.once, args.test_telegram)
     config = Config.from_env()
     listener = Yad2Listener(config)
 

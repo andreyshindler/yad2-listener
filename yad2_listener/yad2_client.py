@@ -193,19 +193,27 @@ def fetch_listings(
             page = context.new_page()
             page.on("response", on_response)
 
-            page.goto(search_url, wait_until="domcontentloaded", timeout=timeout * 1000)
+            def wait_until_cleared(max_ms: int) -> None:
+                waited = 0
+                while waited < max_ms and _looks_like_challenge(page.title()):
+                    page.wait_for_timeout(1000)
+                    waited += 1000
 
-            # Wait for the Radware challenge to clear: it auto-reloads into the
-            # real page once its JS finishes, so poll the title until it stops
-            # looking like a challenge (or we run out of patience).
-            deadline_ms = 30000
-            waited = 0
-            while waited < deadline_ms and _looks_like_challenge(page.title()):
-                page.wait_for_timeout(1000)
-                waited += 1000
+            page.goto(search_url, wait_until="domcontentloaded", timeout=timeout * 1000)
+            # Radware serves a JS challenge on the first visit and only lets you
+            # through once its cookie is set. Wait for it, then — if still on the
+            # challenge — reload (now carrying the cookie), which usually passes.
+            wait_until_cleared(20000)
+            if _looks_like_challenge(page.title()):
+                log.info("Still on Radware challenge; reloading to clear it")
+                try:
+                    page.reload(wait_until="domcontentloaded", timeout=timeout * 1000)
+                except PlaywrightTimeout:
+                    pass
+                wait_until_cleared(25000)
 
             try:
-                page.wait_for_load_state("networkidle", timeout=timeout * 1000)
+                page.wait_for_load_state("networkidle", timeout=15000)
             except PlaywrightTimeout:
                 pass  # some XHRs keep the connection warm; proceed anyway
             page.wait_for_timeout(settle_ms)  # let late XHRs land
