@@ -61,6 +61,16 @@ docker compose logs -f    # watch it work
 docker compose down       # stop it
 ```
 
+There's a `Makefile` wrapping the common commands, so you can also just run:
+
+```bash
+make up      # build and start in the background
+make logs    # follow the logs
+make down    # stop
+make once    # run a single poll cycle
+make help    # list all targets
+```
+
 `docker compose` reads your `.env` for configuration. The seen-ids state is
 kept in a named volume (`yad2-state`) mounted at `/data`, so it survives
 restarts, rebuilds, and `docker compose down` — you won't get re-alerted about
