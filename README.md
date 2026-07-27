@@ -39,6 +39,33 @@ cp .env.example .env
 > On Docker you can skip the `playwright install` step — the image already
 > includes Chromium.
 
+### Running on a home/residential machine (no scraper needed)
+
+On a residential Israeli connection Radware trusts the IP, so the built-in
+browser clears the challenge and **no scraping API is required**. Just leave
+`YAD2_SCRAPER_API_KEY` empty (or remove the scraper lines) and run — the app
+uses the browser path automatically.
+
+With Docker (recommended — headful Chromium runs invisibly under Xvfb):
+
+```bash
+# ensure the scraper is OFF in .env:  YAD2_SCRAPER_API_KEY=
+docker compose up -d --build
+docker compose logs -f
+```
+
+Or natively (a Chromium window will appear each poll unless you keep it
+headless):
+
+```bash
+pip install -r requirements.txt
+playwright install chromium
+python main.py
+```
+
+You should see `Fetch mode: browser` followed by
+`Captured N gateway payload(s), M listing(s)`.
+
 ### Getting past Radware on a VPS (scraping API)
 
 If you run on a datacenter/VPS host (most cloud servers), Radware blocks the
